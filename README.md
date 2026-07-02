@@ -1,4 +1,4 @@
-# knvm — Kişisel Node Version Manager
+# knvm — Node Version Manager
 
 Windows'ta **admin şifresi gerektirmeden** birden fazla Node.js sürümü arasında
 geçiş yapmayı sağlayan basit bir araç.
