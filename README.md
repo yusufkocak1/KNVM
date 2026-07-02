@@ -106,6 +106,37 @@ Değişiklik anında geçerlidir. Yeni terminal açmak **gerekmez**.
 
 ---
 
+### `knvm use` — İnteraktif menüyle sürüm seç
+
+Argüman verilmezse kayıtlı sürümler interaktif menüde listelenir:
+
+```powershell
+knvm use
+```
+
+```
+Aktif etmek icin bir surum secin:
+  > * 24.16.0  =>  Q:\workSpace\app\node\v24.16.0
+      22.22.3  =>  Q:\workSpace\app\node\v22.22.3
+      16.9.1   =>  Q:\workSpace\app\node\v16.9.1
+```
+
+Enter'a basıldığında seçilen sürüm anında aktif olur.
+
+---
+
+### Menü Tuş Kılavuzu
+
+| Tuş | İşlev |
+|-----|-------|
+| `↑` / `↓` | Seçimi taşı |
+| `PgUp` / `PgDn` | Sayfa atla |
+| `Home` / `End` | Listeye başa / sona git |
+| `Enter` | Seç ve uygula |
+| `Esc` | İptal et |
+
+---
+
 ### `knvm list` — Kayıtlı sürümleri listele
 
 ```powershell
@@ -119,6 +150,35 @@ knvm list
 ```
 
 `*` aktif sürümü gösterir.
+
+---
+
+### `knvm list available` — Uzak sürüm listesi ve interaktif kurulum
+
+```powershell
+knvm list available
+```
+
+nodejs.org'dan tüm Node.js sürümlerini çeker, her major sürümün en yeni release'ini tablo halinde gösterir:
+
+```
+Versiyon      LTS               Tarih         Durum
+--------      ---               ----------    ------
+v24.16.0      -                 2025-06-17
+v22.22.3      Jod               2025-05-20    [yuklu]
+v20.18.0      Iron              2024-10-22
+...
+```
+
+| Renk | Anlam |
+|------|-------|
+| Sarı | LTS sürümü |
+| Yeşil | Zaten kayıtlı / yüklü |
+| Gri | Normal sürüm |
+
+Tablo gösteriminin ardından **interaktif menü** açılır:
+- Kayıtlı bir sürüm seçilirse doğrudan aktif edilir
+- Kayıtlı değilse `knvm install` tetiklenerek nodejs.org'dan indirilip kurulur
 
 ---
 
@@ -138,6 +198,27 @@ knvm remove 16.9.1
 ```
 
 Sadece kayıt silinir; diskteki Node klasörü dokunulmaz.
+
+---
+
+### `knvm install <sürüm|lts|latest>` — Otomatik indir ve kaydet
+
+```powershell
+knvm install 22.22.3    # Belirli bir sürüm
+knvm install lts        # En güncel LTS sürümünü indir
+knvm install latest     # En son sürümü indir
+```
+
+nodejs.org'dan doğrudan zip olarak indirir, `%USERPROFILE%\knvm\versions\` altına açar ve
+`config.json`'a kaydeder. Mimari otomatik algılanır (`x64`, `x86`, `arm64`).
+
+Kurulum sonrası aktif etmek için:
+
+```powershell
+knvm use 22.22.3
+```
+
+> `knvm list available` menüsünden seçim yapıldığında kurulu olmayan sürümler için bu komut otomatik tetiklenir.
 
 ---
 
@@ -205,4 +286,4 @@ Windows Terminal + PowerShell kullanılması önerilir.
 - Her `node` / `npm` / `npx` çağrısında ~200 ms PowerShell başlangıç gecikmesi oluşur (shim mimarisinin kaçınılmaz maliyeti).
 - Global npm paketleri (`npm i -g`) sürüme özgüdür; `knvm use` sonrası global paketler değişir.
 - `cmd.exe` terminalleri PATH önceliğinden otomatik yararlanamaz.
-- Faz 5 (otomatik indirme) ve Faz 6 (`.knvmrc` otomatik seçim) henüz uygulanmadı.
+- `.knvmrc` dosyasına göre otomatik sürüm seçimi henüz uygulanmadı.
