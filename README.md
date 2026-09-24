@@ -65,6 +65,12 @@ Kurulum şunları yapar:
 | 5 | `%USERPROFILE%\knvm\shims` yolunu **User PATH**'e ekler |
 | 6 | PowerShell `$PROFILE`'ına shims'i PATH'in başına taşıyan satırı ekler |
 
+CMD.exe önce sistem ortam değişkenlerini sonra user ortam değişkenlerini okur bunu değiştirmek için cmd-init.bat dosyasını `%USERPROFILE%` altına koy ve aşağıdaki komutu çalıştır. 
+
+```powershell
+reg add "HKCU\Software\Microsoft\Command Processor" /v AutoRun /t REG_SZ /d "\"%USERPROFILE%\cmd-init.bat\"" /f 
+```
+
 > Adım 6, sistemde Machine PATH'te kayıtlı başka bir Node kurulumu (eski nvm,
 > IntelliJ otomatik kurulumu vb.) varsa knvm'nin öncelikli olmasını sağlar.
 
