@@ -25,55 +25,200 @@ function Get-VersionPath([PSCustomObject]$cfg, [string]$name) {
 }
 
 # ---------------------------------------------------------------------------
-# Invoke-Menu  -  ok tuslarÄ±yla gezilen interaktif secim menusu
-#   Items      : goruntÃ¼lenecek string dizisi
-#   Title      : menu ustu baslik (opsiyonel)
-#   MaxVisible : ayni anda gorunen satir sayisi (varsayilan 12)
+#   Glyph seti. Dosya saf ASCII kalsin diye Unicode karakterler [char] kodu
+#   ile uretiliyor: PowerShell 5.1 BOM'suz bir .ps1 dosyasini sistem ANSI kod
+#   sayfasiyla okur, literal Unicode karakterler bozulurdu.
+#   KNVM_ASCII=1 ile duz ASCII sete zorlanabilir.
+# ---------------------------------------------------------------------------
+$script:KnvmGlyphs = $null
+function Get-Glyphs {
+    if ($script:KnvmGlyphs) { return $script:KnvmGlyphs }
+
+    $unicode = $false
+    if ($env:KNVM_ASCII -ne "1") {
+        try {
+            if (-not [Console]::IsOutputRedirected) {
+                if ([Console]::OutputEncoding.CodePage -ne 65001) {
+                    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+                }
+                $unicode = ([Console]::OutputEncoding.CodePage -eq 65001)
+            }
+        } catch { $unicode = $false }
+    }
+
+    if ($unicode) {
+        $script:KnvmGlyphs = @{
+            Rule = [string][char]0x2500   # yatay cizgi
+            Cur  = [string][char]0x203A   # secim oku
+            Mark = [string][char]0x25CF   # dolu daire (aktif / yuklu)
+            Up   = [string][char]0x2191
+            Down = [string][char]0x2193
+        }
+    } else {
+        $script:KnvmGlyphs = @{ Rule = "-"; Cur = ">"; Mark = "*"; Up = "^"; Down = "v" }
+    }
+    return $script:KnvmGlyphs
+}
+
+# ---------------------------------------------------------------------------
+# Invoke-Menu  -  ok tuslariyla gezilen interaktif secim menusu
+#   Items      : ana sutun (ornegin surum adi)
+#   Details    : sagda soluk gosterilen ikincil sutun (ornegin yol) - opsiyonel
+#   Marked     : $g.Mark ile isaretlenecek indeksler (aktif/yuklu) - opsiyonel
+#   Title      : menu ustu baslik
+#   MaxVisible : ayni anda gorunen satir sayisi
 # Donus degeri : secilen indeks  ya da  -1 (Escape / iptal)
 # ---------------------------------------------------------------------------
 function Invoke-Menu {
     param(
         [string[]]$Items,
-        [string]$Title   = "",
-        [int]$MaxVisible = 12
+        [string[]]$Details   = @(),
+        [int[]]$Marked       = @(),
+        [string]$Title       = "",
+        [int]$MaxVisible     = 12
     )
 
-    if ($Items.Count -eq 0) { return -1 }
+    if ($null -eq $Items -or $Items.Count -eq 0) { return -1 }
 
-    $sel   = 0
-    $top   = 0
     $total = $Items.Count
-    $vis   = [Math]::Min($MaxVisible, $total)
-    $w     = [Console]::WindowWidth
+    $g     = Get-Glyphs
 
-    [Console]::CursorVisible = $false
+    # Konsol etkilesimli degilse (cikti/girdi yonlendirilmis, ISE, pipe...) imlec
+    # konumlandirma calismaz - duz numarali listeye dus.
+    if ([Console]::IsOutputRedirected -or [Console]::IsInputRedirected) {
+        if ($Title) { Write-Host ""; Write-Host "  $Title" -ForegroundColor Cyan }
+        for ($i = 0; $i -lt $total; $i++) {
+            $m = if ($Marked -contains $i) { $g.Mark } else { " " }
+            $d = if ($i -lt $Details.Count -and $Details[$i]) { "   " + $Details[$i] } else { "" }
+            Write-Host ("  {0,3}) {1} {2}{3}" -f ($i + 1), $m, $Items[$i], $d)
+        }
+        Write-Host ""
+        $answer = Read-Host "  Numara (bos birakirsaniz iptal)"
+        $n = 0
+        if ($answer -and [int]::TryParse($answer.Trim(), [ref]$n) -and $n -ge 1 -and $n -le $total) {
+            return $n - 1
+        }
+        return -1
+    }
 
-    if ($Title) { Write-Host $Title -ForegroundColor Cyan }
+    $sel = 0
+    $top = 0
+    $vis = [Math]::Min($MaxVisible, $total)
 
-    $startRow = [Console]::CursorTop
-    for ($i = 0; $i -le $vis; $i++) { [Console]::WriteLine() }
+    # Menu pencereye sigmali: baslik, cizgiler ve ipucu satiri icin yer birak.
+    # Sigmazsa her cizimde konsol kayar ve hizalama tutmaz.
+    $winH = 0
+    try { $winH = [Console]::WindowHeight } catch { $winH = 0 }
+    if ($winH -gt 8) { $vis = [Math]::Max(1, [Math]::Min($vis, $winH - 6)) }
+
+    # Draw'in bastigi satir sayisi: satirlar + alt cizgi + ipucu
+    $frameRows = $vis + 2
+
+    $w = 79
+    try { $w = [Math]::Max(40, [Console]::WindowWidth) - 1 } catch { }
+
+    # Ad sutunu: en uzun ogeye gore, ama genisligin ucte birini asmasin
+    $nameW = 0
+    foreach ($it in $Items) { if ($it.Length -gt $nameW) { $nameW = $it.Length } }
+    $nameW = [Math]::Min($nameW, [Math]::Max(8, [int]($w / 3)))
+
+    $detW = $w - ($nameW + 8)
+    if ($detW -lt 0) { $detW = 0 }
+
+    if ($Title) {
+        Write-Host ""
+        Write-Host ("  " + $Title) -ForegroundColor Cyan
+        Write-Host ("  " + ($g.Rule * ($w - 2))) -ForegroundColor DarkGray
+    }
+
+    $drawn = $false
 
     function Draw {
-        [Console]::SetCursorPosition(0, $startRow)
+        # Onceki cizimin ilk satirina don. Mutlak bir baslangic satiri saklamak
+        # yerine her seferinde GUNCEL CursorTop'tan geri sayiyoruz; boylece iki
+        # cizim arasinda konsol kaydirma (scroll) yapmis olsa bile hizalama
+        # bozulmaz. Eski kod basta olculen $startRow'u sabit tutuyordu: imlec
+        # ekranin altindayken menu asagi kayiyor, onceki kopya ekranda kaliyor
+        # (menu "coklaniyor") ve $startRow + $vis + 1 tampon yuksekligini asinca
+        # SetCursorPosition ArgumentOutOfRangeException firlatiyordu.
+        if ($drawn) {
+            $row = [Math]::Max(0, [Console]::CursorTop - $frameRows)
+            [Console]::SetCursorPosition(0, $row)
+        }
+
         for ($i = $top; $i -lt ($top + $vis); $i++) {
-            $arrow = if ($i -eq $sel) { ">" } else { " " }
-            $line  = ("  $arrow $($Items[$i])").PadRight($w - 1)
+            $cur  = if ($i -eq $sel)          { $g.Cur }  else { " " }
+            $mark = if ($Marked -contains $i) { $g.Mark } else { " " }
+
+            $name = $Items[$i]
+            if ($name.Length -gt $nameW) { $name = $name.Substring(0, $nameW) }
+            $name = $name.PadRight($nameW)
+
+            $det = if ($i -lt $Details.Count -and $Details[$i]) { $Details[$i] } else { "" }
+            if ($det.Length -gt $detW) {
+                if ($detW -gt 8) {
+                    # Ortadan kisalt - yolun hem koku hem yapragi gorunur kalsin
+                    $keep = $detW - 3
+                    $head = [int][Math]::Floor($keep / 3)
+                    $det  = $det.Substring(0, $head) + "..." +
+                            $det.Substring($det.Length - ($keep - $head))
+                } else {
+                    $det = $det.Substring(0, $detW)
+                }
+            }
+            $det = $det.PadRight($detW)
+
+            # Satir genisligi tam olarak $w: 2 + (1+1) + (1+1) + nameW + 2 + detW
             if ($i -eq $sel) {
-                Write-Host $line -ForegroundColor Black -BackgroundColor Cyan -NoNewline
+                Write-Host "  $cur $mark $name  $det" -ForegroundColor Black -BackgroundColor Cyan -NoNewline
             } else {
-                Write-Host $line -ForegroundColor Gray -NoNewline
+                Write-Host "  $cur "    -NoNewline
+                Write-Host "$mark "     -ForegroundColor Green    -NoNewline
+                Write-Host $name        -ForegroundColor Gray     -NoNewline
+                Write-Host "  $det"     -ForegroundColor DarkGray -NoNewline
             }
             [Console]::WriteLine()
         }
-        $upInd   = if ($top -gt 0)               { "(^)" } else { "   " }
-        $downInd = if (($top + $vis) -lt $total) { "(v)" } else { "   " }
-        $hint = "  $upInd $($sel+1)/$total $downInd  Yukari/Asagi=gezin  PgUp/PgDn  Enter=sec  Esc=iptal"
-        Write-Host $hint.PadRight($w - 1) -ForegroundColor DarkGray -NoNewline
+
+        Write-Host ("  " + ($g.Rule * ($w - 2))) -ForegroundColor DarkGray -NoNewline
+        [Console]::WriteLine()
+
+        $u   = if ($top -gt 0)               { $g.Up }   else { " " }
+        $d   = if (($top + $vis) -lt $total) { $g.Down } else { " " }
+        $pos = "$u $($sel+1)/$total $d"
+
+        $pairs = @(
+            @(($g.Up + $g.Down), "gezin"),
+            @("PgUp/PgDn",       "sayfa"),
+            @("Enter",           "sec"),
+            @("Esc",             "iptal")
+        )
+        $plain = "  $pos   " + (($pairs | ForEach-Object { "$($_[0]) $($_[1])" }) -join "   ")
+
+        if ($plain.Length -le $w) {
+            Write-Host "  $pos   " -ForegroundColor White -NoNewline
+            $used = 2 + $pos.Length + 3
+            for ($p = 0; $p -lt $pairs.Count; $p++) {
+                $sep = if ($p -lt $pairs.Count - 1) { "   " } else { "" }
+                Write-Host $pairs[$p][0] -ForegroundColor Cyan -NoNewline
+                Write-Host (" " + $pairs[$p][1] + $sep) -ForegroundColor DarkGray -NoNewline
+                $used += $pairs[$p][0].Length + 1 + $pairs[$p][1].Length + $sep.Length
+            }
+            if ($used -lt $w) { Write-Host (" " * ($w - $used)) -NoNewline }
+        } else {
+            $short = "  $pos   Enter sec   Esc iptal"
+            if ($short.Length -gt $w) { $short = $short.Substring(0, $w) }
+            Write-Host $short.PadRight($w) -ForegroundColor DarkGray -NoNewline
+        }
         [Console]::WriteLine()
     }
 
     try {
+        try { [Console]::CursorVisible = $false } catch { }
+
         Draw
+        $drawn = $true
+
         while ($true) {
             $k = [Console]::ReadKey($true)
             switch ($k.Key) {
@@ -99,21 +244,15 @@ function Invoke-Menu {
                 }
                 "Home" { $sel = 0; $top = 0 }
                 "End"  { $sel = $total - 1; $top = [Math]::Max(0, $total - $vis) }
-                "Enter" {
-                    [Console]::SetCursorPosition(0, $startRow + $vis + 1)
-                    [Console]::CursorVisible = $true
-                    return $sel
-                }
-                "Escape" {
-                    [Console]::SetCursorPosition(0, $startRow + $vis + 1)
-                    [Console]::CursorVisible = $true
-                    return -1
-                }
+                # Draw her zaman son satiri WriteLine ile bitirir; imlec zaten
+                # menunun hemen altindadir, ayrica konumlandirmaya gerek yok.
+                "Enter"  { return $sel }
+                "Escape" { return -1 }
             }
             Draw
         }
     } finally {
-        [Console]::CursorVisible = $true
+        try { [Console]::CursorVisible = $true } catch { }
     }
 }
 
@@ -168,35 +307,34 @@ switch ($Command.ToLower()) {
                 } |
                 Sort-Object { [int]($_.version -replace '^v(\d+)\..*', '$1') } -Descending
 
-            # Tablo baslik
-            $h = "{0,-12}  {1,-16}  {2,-12}  {3}" -f "Versiyon", "LTS", "Tarih", "Durum"
-            $s = "{0,-12}  {1,-16}  {2,-12}  {3}" -f "--------", "---", "----------", "------"
-            Write-Host ""
-            Write-Host $h -ForegroundColor White
-            Write-Host $s -ForegroundColor DarkGray
-
+            # Tablo artik menunun kendisi: surum ana sutunda, LTS/tarih soluk
+            # ikincil sutunda, yuklu olanlar isaretli.
             $menuItems = [System.Collections.Generic.List[string]]::new()
+            $menuDets  = [System.Collections.Generic.List[string]]::new()
+            $menuMarks = [System.Collections.Generic.List[int]]::new()
+
+            $i = 0
             foreach ($v in $rows) {
                 $ver      = $v.version
                 $ltsName  = if ($v.lts -and $v.lts -isnot [bool]) { $v.lts } else { "-" }
                 $date     = $v.date.Substring(0, 10)
                 $verClean = $ver.TrimStart('v')
-                $isInst   = $installed -contains $verClean -or $installed -contains $ver
-                $status   = if ($isInst) { "[yuklu]" } else { "" }
 
-                $row   = "{0,-12}  {1,-16}  {2,-12}  {3}" -f $ver, $ltsName, $date, $status
-                $color = if ($isInst) { "Green" } elseif ($ltsName -ne "-") { "Yellow" } else { "Gray" }
-                Write-Host $row -ForegroundColor $color
-                $menuItems.Add(("{0,-12}  {1,-10}  {2}" -f $ver, $ltsName, $status))
+                if ($installed -contains $verClean -or $installed -contains $ver) {
+                    $menuMarks.Add($i)
+                }
+                $menuItems.Add($ver)
+                $menuDets.Add(("LTS {0,-14}  {1}" -f $ltsName, $date))
+                $i++
             }
 
-            Write-Host ""
-            Write-Host "  Sari=LTS  |  Yesil=Yuklu" -ForegroundColor DarkGray
-            Write-Host ""
-
-            $idx = Invoke-Menu -Items $menuItems.ToArray() -Title "Bir surum secin (yukle / aktif et):" -MaxVisible 12
+            $idx = Invoke-Menu -Items $menuItems.ToArray() `
+                               -Details $menuDets.ToArray() `
+                               -Marked $menuMarks.ToArray() `
+                               -Title "Bir surum secin  -  isaretliler zaten yuklu" `
+                               -MaxVisible 12
             if ($idx -lt 0) {
-                Write-Host "Iptal edildi." -ForegroundColor DarkGray
+                Write-Host "  Iptal edildi." -ForegroundColor DarkGray
                 exit 0
             }
 
@@ -209,7 +347,9 @@ switch ($Command.ToLower()) {
                 $cfg.current = $activeName
                 Save-Config $cfg
                 Write-Host ""
-                Write-Host "Aktif versiyon: $activeName" -ForegroundColor Green
+                Write-Host "  Aktif versiyon: " -ForegroundColor Green -NoNewline
+                Write-Host $activeName -ForegroundColor White
+                Write-Host ""
             } else {
                 Write-Host ""
                 & "$KnvmHome\knvm.ps1" install $chosenVer
@@ -218,12 +358,25 @@ switch ($Command.ToLower()) {
             $cfg   = Get-Config
             $props = @($cfg.versions.PSObject.Properties)
             if ($props.Count -eq 0) {
-                Write-Host "Kayitli versiyon yok."
+                Write-Host ""
+                Write-Host "  Kayitli versiyon yok. Once 'knvm add' veya 'knvm install' kullanin." -ForegroundColor DarkGray
+                Write-Host ""
             } else {
+                $g     = Get-Glyphs
+                $nameW = 0
+                foreach ($v in $props) { if ($v.Name.Length -gt $nameW) { $nameW = $v.Name.Length } }
+
+                Write-Host ""
                 foreach ($v in $props) {
-                    $mark = if ($cfg.current -eq $v.Name) { "*" } else { " " }
-                    Write-Host "  $mark $($v.Name)  =>  $($v.Value)"
+                    $isCur = ($cfg.current -eq $v.Name)
+                    $mark  = if ($isCur) { $g.Mark } else { " " }
+                    Write-Host "  $mark " -ForegroundColor Green -NoNewline
+                    Write-Host $v.Name.PadRight($nameW) -ForegroundColor $(if ($isCur) { "White" } else { "Gray" }) -NoNewline
+                    Write-Host "   $($v.Value)" -ForegroundColor DarkGray
                 }
+                Write-Host ""
+                Write-Host "  $($g.Mark) = aktif surum" -ForegroundColor DarkGray
+                Write-Host ""
             }
         }
     }
@@ -237,26 +390,37 @@ switch ($Command.ToLower()) {
             }
             $cfg.current = $Arg1
             Save-Config $cfg
-            Write-Host "Aktif versiyon: $Arg1" -ForegroundColor Green
+            Write-Host "  Aktif versiyon: " -ForegroundColor Green -NoNewline
+            Write-Host $Arg1 -ForegroundColor White
         } else {
             $cfg   = Get-Config
             $props = @($cfg.versions.PSObject.Properties)
             if ($props.Count -eq 0) {
-                Write-Host "Kayitli versiyon yok. Once 'knvm add' veya 'knvm install' kullanin." -ForegroundColor Red
+                Write-Host "  Kayitli versiyon yok. Once 'knvm add' veya 'knvm install' kullanin." -ForegroundColor Red
                 exit 1
             }
-            $menuItems = $props | ForEach-Object {
-                $mark = if ($cfg.current -eq $_.Name) { "*" } else { " " }
-                "{0} {1,-15}  {2}" -f $mark, $_.Name, $_.Value
+
+            $names = @($props | ForEach-Object { $_.Name })
+            $paths = @($props | ForEach-Object { [string]$_.Value })
+            $marks = @()
+            for ($i = 0; $i -lt $props.Count; $i++) {
+                if ($cfg.current -eq $props[$i].Name) { $marks += $i }
             }
-            $idx = Invoke-Menu -Items $menuItems -Title "Aktif etmek icin bir surum secin:" -MaxVisible 10
+
+            $idx = Invoke-Menu -Items $names -Details $paths -Marked $marks `
+                               -Title "Aktif etmek icin bir surum secin" -MaxVisible 10
             if ($idx -lt 0) {
-                Write-Host "Iptal edildi." -ForegroundColor DarkGray
+                Write-Host "  Iptal edildi." -ForegroundColor DarkGray
                 exit 0
             }
+
             $cfg.current = $props[$idx].Name
             Save-Config $cfg
-            Write-Host "Aktif versiyon: $($props[$idx].Name)" -ForegroundColor Green
+            Write-Host ""
+            Write-Host "  Aktif versiyon: " -ForegroundColor Green -NoNewline
+            Write-Host $props[$idx].Name -ForegroundColor White
+            Write-Host "  $($props[$idx].Value)" -ForegroundColor DarkGray
+            Write-Host ""
         }
     }
 
